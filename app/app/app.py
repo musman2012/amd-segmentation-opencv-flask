@@ -5,7 +5,7 @@ import os
 # and send_from_directory will help us to send/show on the
 # browser the file that the user just uploaded
 from flask import Flask, render_template, request, redirect, url_for, send_from_directory
-#from werkzeug import secure_filename
+from werkzeug import secure_filename
 
 import testcv
 # Initialize the Flask application
@@ -37,8 +37,8 @@ def upload():
     # Check if the file is one of the allowed types/extensions
     if file and allowed_file(file.filename):
         # Make the filename safe, remove unsupported chars
-        #filename = secure_filename(file.filename)
-        filename = file.filename
+        filename = secure_filename(file.filename)
+        #filename = file.filename
         # Move the file form the temporal folder to
         # the upload folder we setup
         file.save(os.path.join(app.config['UPLOAD_FOLDER'], filename))
