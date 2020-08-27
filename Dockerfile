@@ -1,6 +1,6 @@
 # start with a base image
 FROM ubuntu:14.04.3
-MAINTAINER Real Python <info@realpython.com>
+MAINTAINER Usman <musman14@student.bradford.ac.uk>
 
 # install dependencies
 RUN apt-get update
@@ -10,8 +10,10 @@ RUN apt-get install -y python-opencv
 RUN apt-get install -y python-matplotlib
 RUN apt-get install -y python-scipy
 RUN apt-get install -y python-skimage
+RUN apt-get install -y git
 RUN pip install uwsgi
 RUN pip install Flask
+RUN pip install -U Werkzeug
 
 # update working directories
 ADD ./app /app
