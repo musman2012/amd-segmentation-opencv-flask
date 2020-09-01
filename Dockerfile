@@ -14,6 +14,7 @@ RUN apt-get install -y git
 RUN pip install uwsgi
 RUN pip install Flask
 RUN pip install -U Werkzeug
+RUN pip install Pillow
 
 # update working directories
 ADD ./app /app
