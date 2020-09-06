@@ -37,7 +37,7 @@ def index():
 def upload():
     # Get the name of the uploaded file
     file = request.files['file']
-    print request
+    #print request
     # Check if the file is one of the allowed types/extensions
     if file and allowed_file(file.filename):
         # Make the filename safe, remove unsupported chars
@@ -52,7 +52,7 @@ def upload():
         #plt.show()
         # Redirect the user to the uploaded_file route, which
         # will basicaly show on the browser the uploaded file
-        print filename
+        #print filename
         res_str = testcv.image_make(path, filename)
         #my_str += res_str
         app.config['my_str'] = res_str

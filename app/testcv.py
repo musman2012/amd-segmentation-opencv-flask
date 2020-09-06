@@ -1,9 +1,12 @@
- 
 import cv2 as cv
 import os
 import numpy as np
 from PIL import Image
 import io
+from skimage import data, img_as_float
+from skimage.segmentation import chan_vese
+from scipy import stats
+
 
 def apply_median_filter(in_img):
   filtered_img = cv.medianBlur(in_img, 3)
@@ -18,7 +21,7 @@ def apply_k_mean_clustering(in_img):
   # define criteria, number of clusters(K) and apply kmeans()
   criteria = (cv.TERM_CRITERIA_EPS + cv.TERM_CRITERIA_MAX_ITER, 10, 1.0)
   K = 2
-  ret,label,center=cv.kmeans(Z,K, criteria,10,cv.KMEANS_RANDOM_CENTERS)
+  ret,label,center=cv.kmeans(Z,K,None,criteria,10,cv.KMEANS_RANDOM_CENTERS)
   # cv.kmeans(Z,K,None,criteria,10,cv.KMEANS_RANDOM_CENTERS)
   # Now convert back into uint8, and make original image
   center = np.uint8(center)
@@ -62,36 +65,41 @@ def find_RPE_col(rows, cols, in_loc):
 def detect_ilm(in_img):
 	# print(edges.shape) ## 390, 508 ==> Rows x Cols
 	rows, cols = in_img.shape
-	center = cols // 2
+	center = 200  # cols//2 - 10
 	center += 50
 	ilm_pos = []
 	ilm_dict = dict()
 	seg_img = np.zeros((rows, cols), np.uint8)
 	prev_row = 0
+	min_row = 999
 	for col in range(center, cols):
 		for row in range(rows):
-			if in_img[row, col] > 200 and (abs(prev_row - row) < 5 or prev_row == 0):
-				seg_img[row, col] = 255
-				pos = (row, col)
-				ilm_dict[col] = row
-				ilm_pos.append(pos)
-				# print("In the loop", row, col)
-				prev_row = row
-				break
+			if in_img[row, col] > 200:  # and (abs(prev_row - row) < 5 or prev_row == 0):
+				if abs(prev_row - row) < 5 or col < 320:
+					seg_img[row, col] = 255
+					pos = (row, col)
+					ilm_dict[col] = row
+					ilm_pos.append(pos)
+					min_row = min(row, min_row)
+					# print("In the loop", row, col)
+					prev_row = row
+					break
 
 	prev_row = 0
 	for col in range(center - 1, -1, -1):
 		for row in range(rows):
-			if in_img[row, col] > 200 and (abs(prev_row - row) < 5 or prev_row == 0):
-				seg_img[row, col] = 255
-				pos = (row, col)
-				ilm_pos.append(pos)
-				ilm_dict[col] = row
-				# print("In the loop", row, col)
-				prev_row = row
-				break
+			if in_img[row, col] > 200:  # and (abs(prev_row - row) < 5 or prev_row == 0):
+				if abs(prev_row - row) < 5 or col > 100:
+					seg_img[row, col] = 255
+					pos = (row, col)
+					ilm_pos.append(pos)
+					ilm_dict[col] = row
+					min_row = min(row, min_row)
+					# print("In the loop", row, col)
+					prev_row = row
+					break
 
-	return ilm_pos, ilm_dict
+	return ilm_pos, ilm_dict, min_row
 
 
 def return_avg(starting_index, col_val, hi_cols, hi_rows):
@@ -138,24 +146,28 @@ def segment_rpe(hi_rows, hi_cols, size):
 def estimate_rpe(bm_pos_curve, rpe_pos_curve, total_cols):
 	segmented_pos = []
 	pos_dict = dict()
+	max_row = 0
 	for counter in range(0, 76):
 		bmr, bmc = bm_pos_curve[counter]
 		rper, rpec = rpe_pos_curve[counter]
 		tr = min(bmr, rper)
 		temp = tr, counter  # bm_pos_curve[counter]
 		segmented_pos.append(temp)
+		max_row = max(tr, max_row)
 		pos_dict[counter] = tr
 
 	for counter in range(76, 326):
 		temp = rpe_pos_curve[counter]
 		tr, tc = temp
 		segmented_pos.append(temp)
+		max_row = max(tr, max_row)
 		pos_dict[counter] = tr
 
 	for counter in range(326, total_cols):
 		temp = bm_pos_curve[counter]
 		tr, tc = temp
 		segmented_pos.append(temp)
+		max_row = max(tr, max_row)
 		pos_dict[counter] = tr
 
 	# counter = 350
@@ -170,7 +182,7 @@ def estimate_rpe(bm_pos_curve, rpe_pos_curve, total_cols):
 
 	# print("Row col", r, c)
 
-	return segmented_pos, pos_dict
+	return segmented_pos, pos_dict, max_row
 
 
 def find_starting_row_fluid(ilm_dict, counter):
@@ -313,9 +325,85 @@ def remove_intensity_outliers(ilm_mode, ilm_dict, hi_r, hi_c):
 
 	return (new_rows, new_cols)
 
+def append_fluid_spots(fluid_spots, start_row, end_row, col, image_scan):
+  while start_row < end_row and (image_scan[start_row, col] == 0 or col < 300):
+    temp = start_row, col
+    fluid_spots.append(temp)
+    start_row += 1
 
-from scipy import stats
+  return fluid_spots
 
+def detect_fluid_spots(detected_fluid_output, segmented_rpe_dict, ilm_dict, min_row, max_row):
+	## will only be called in those scans in which the cave is clear
+	## start from the ilm_dict KVP at a specific column
+	## go until the value of segmented_rpe_dict[col]
+	## append all the values
+	tot_cols = 380  # detected_fluid_output.shape[1]
+	fluid_spots = []
+	s_row = min_row
+	e_row = max_row
+	col_start = 90
+	fluid_start_row = dict()
+
+	if col_start in ilm_dict:
+		s_row = ilm_dict[col_start]
+
+	if col_start in segmented_rpe_dict:
+		e_row = segmented_rpe_dict[col_start]
+
+	s_row += 10
+
+	while s_row < e_row:
+		if detected_fluid_output[s_row, col_start] > 0:
+			fluid_spots = append_fluid_spots(fluid_spots, s_row + 1, e_row, col_start, detected_fluid_output)
+			fluid_start_row[col_start] = s_row
+			break
+		s_row += 1
+
+	## HERE s_row contains the location of fluid start at col 100
+	## now go right and left
+	prev_row = s_row
+	# row = s_row - 10     ## starting from a bit up to cover any rocks going up
+	for col in range(col_start + 1, tot_cols):  ## go right
+		row = prev_row - 10
+		if col in segmented_rpe_dict:
+			e_row = segmented_rpe_dict[col]
+
+		while row < e_row:
+			if detected_fluid_output[row, col] > 100:
+				fluid_spots = append_fluid_spots(fluid_spots, row + 1, e_row, col, detected_fluid_output)
+				fluid_start_row[col] = row
+				prev_row = row
+				break
+			row += 1
+
+	prev_row = s_row
+	# row = s_row - 10
+	for col in range(col_start - 1, -1, -1):  ## go left
+		row = prev_row - 10
+		if col in segmented_rpe_dict:
+			e_row = segmented_rpe_dict[col]
+
+		while row < e_row:
+			if detected_fluid_output[row, col] > 100:
+				fluid_spots = append_fluid_spots(fluid_spots, row + 1, e_row, col, detected_fluid_output)
+				fluid_start_row[col] = row
+
+				prev_row = row
+				break
+			row += 1
+
+	for c in range(0, tot_cols):
+		if c in fluid_start_row:
+			continue
+
+		if c - 2 in fluid_start_row and c + 2 in fluid_start_row:
+			e_row = segmented_rpe_dict[c]
+			temp_row = (fluid_start_row[c - 2] + fluid_start_row[c + 2]) // 2
+			fluid_spots = append_fluid_spots(fluid_spots, temp_row + 1, e_row, c, detected_fluid_output)
+			fluid_start_row[c] = temp_row
+
+	return fluid_spots
 
 def return_vals(my_dict):
 	vals = []
@@ -503,6 +591,17 @@ def return_dist(first_line_dict, second_line_dict):
 
   return distance
 
+def return_cave_dist(first_line_dict, second_line_dict):
+  length = len(first_line_dict)
+  distance = 0
+  for i in range(10, 211, 10):
+    if i < 50 and abs(first_line_dict[i] - first_line_dict[i-2]) > 5:
+      continue
+    if i in second_line_dict and i in first_line_dict:
+      distance += abs(first_line_dict[i] - second_line_dict[i])
+
+  return distance
+
 def adjust_bm(distance, so_pos_curve_dict, so_pos_curve):
   residue = 0
   length = len(so_pos_curve_dict)
@@ -573,6 +672,27 @@ def detect_roi(gray_th, ilm_pos, rpe_pos, ilm_dict, bm_pos_curve_dict):
 
 	return ROI
 
+
+def detect_fluid_contours(input_image, max_rpe_row, min_ilm_row):
+	md_img = apply_median_filter(input_image)
+	gray = cv.cvtColor(md_img, cv.COLOR_BGR2GRAY)
+
+	chv = chan_vese(gray, mu=0.25, lambda1=1, lambda2=1, tol=1e-3, max_iter=200,
+					dt=0.5, init_level_set="checkerboard", extended_output=True)
+
+	data = chv[1].copy()
+
+	im_max = 255
+	data = abs(data.astype(np.float64) / data.max())  # normalize the data to 0 - 1
+	data = im_max * data  # Now scale by 255
+	ls_img = data.astype(np.uint8)
+
+	temp = apply_k_mean_clustering(ls_img)
+	temp = apply_canny_edge(temp)
+	# out_img2, areas = find_ret_contours(temp, max_rpe_row, min_ilm_row)
+
+	return temp
+
 def segment(scan):
 	LUID_THR = 75  ## TODO1: Make this adaptive with the intensity of scan higher value more FP
 	### TODO2: Separate out ROI (Region of Interest) + Add a Vertical line at left ==> Ignore open Contours
@@ -594,12 +714,17 @@ def segment(scan):
 	clus_img = apply_k_mean_clustering(md_img)
 	kernel = np.ones((5, 5), np.uint8)
 	erosion = cv.erode(clus_img, kernel, iterations=1)
-	erosion = cv.morphologyEx(clus_img, cv.MORPH_CLOSE, kernel)
+
 	erosion = cv.dilate(erosion, kernel, iterations=1)
 
 	ed_img = apply_canny_edge(erosion)
-	ilm_pos, ilm_dict = detect_ilm(ed_img)
+	ilm_pos, ilm_dict, min_ilm_row = detect_ilm(ed_img)
 
+	ilm_rows, ilm_cols = [], []
+	for i in range(0, len(ilm_pos)):
+		if i in ilm_dict:
+			ilm_cols.append(i)
+			ilm_rows.append(ilm_dict[i])
 
 	# dilated_fluid = cv.dilate(erosion, kernel,iterations = 1)
 	# dilated_fluid = apply_k_mean_clustering(dilated_fluid)
@@ -646,6 +771,19 @@ def segment(scan):
 	for i in range(0, len(high_cols)):
 		temp = hi_rows[i], high_cols[i]
 		rpe_pos.append(temp)
+
+	################# Polynomial Fit for ILM ###################
+	ilm_z = np.polyfit(ilm_cols, ilm_rows, 15)  ## need to use this for Foci segmentation
+	ilm_equation = np.poly1d(ilm_z)
+
+	ilm_curve = []
+	ilm_curve_dict = dict()  ## pass this dict to Foci segmentation
+	# rpe_dict = dict()
+	for i in range(0, T_COLS):
+		curve_row = int(ilm_equation(i))
+		temp = curve_row, i
+		ilm_curve.append(temp)
+		ilm_curve_dict[i] = curve_row
 
 	############ The idea of applying a ploynominal fit was taken from
 	### Automated Segmentation of RPE Layer for the
@@ -706,7 +844,7 @@ def segment(scan):
 	# rpe_pos, rpe_dict = segment_rpe(gray, rpe_col, rpe_row, gray.shape[1])
 	# print(rpe_dict)
 
-	segmented_rpe_pos, segmented_rpe_dict = estimate_rpe(bm_pos_curve, rpe_pos_curve, T_COLS)
+	segmented_rpe_pos, segmented_rpe_dict, max_rpe_row = estimate_rpe(bm_pos_curve, rpe_pos_curve, T_COLS)
 
 	## detecting Fluid
 	# roi = detect_roi(md_img, ilm_pos, rpe_pos, ilm_dict, segmented_rpe_dict)
@@ -736,6 +874,10 @@ def segment(scan):
 	# print("Length of RPE Dict is ",len(rpe_dict))
 	# print(rpe_pos)
 
+	detected_fluid_output = detect_fluid_contours(img, max_rpe_row, min_ilm_row)
+
+	fluid_spots = detect_fluid_spots(detected_fluid_output, segmented_rpe_dict, ilm_dict, min_ilm_row, max_rpe_row)
+
 	mid_dst = 89
 	if 100 in ilm_dict:
 		mid_dst = so_pos_curve_dict[100] - ilm_dict[100]
@@ -759,7 +901,14 @@ def segment(scan):
 
 	line_dst = return_dist(rpe_pos_curve_dict, so_pos_curve_dict)
 
-	print("Lines distance is ", line_dst, " Brights spots", total_bright_points, "another", mid_dst)
+	cave_dist = return_cave_dist(segmented_rpe_dict, ilm_curve_dict)    ## add this method
+
+	#print("Lines distance is ", line_dst, " Brights spots", total_bright_points, "another", mid_dst)
+
+	if cave_dist < 2000:
+		final_fluid = fluid_pos.copy()
+	elif cave_dist < 5000:
+		final_fluid = fluid_spots.copy()
 
 	so_pos_curve_dict, so_pos_curve = adjust_bm(line_dst, so_pos_curve_dict, so_pos_curve)
 
@@ -777,7 +926,7 @@ def segment(scan):
 		segmented_scan_ilm_rpe_final[row:row + 5, col, 1] = 10
 		segmented_scan_ilm_rpe_final[row:row + 5, col, TWO] = 10
 
-	for f in fluid_pos:
+	for f in final_fluid:
 		NUM_FLUID_PIXELS += 1
 		(row_f, col_f) = f
 		segmented_scan_ilm_rpe_final[row_f:row_f + 1, col_f, TWO] = 20
