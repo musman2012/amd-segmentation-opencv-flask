@@ -1,6 +1,5 @@
-# OpenCV, Flask, Docker with a Basic Template to Upload Pictures
+# Implementation of AMD Biomerkers Detection using OpenCV and Deep Learning
 
-Maintained for Masters Dissertation University of Bradford - Data Science
 
 #### Getting started:
 
